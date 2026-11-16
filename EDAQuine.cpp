@@ -6,6 +6,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <functional>
+#include <iomanip>
+#include <limits>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 
@@ -17,8 +22,10 @@ struct Termo {
 using Produto = array<int, 4>;
 // -1: variavel ausente; 0: negada; 1: normal.
 
+
+
 // Converte a string SOP em uma lista de produtos.
-vector<Produto> lerSOP(const string& entrada) {
+vector<Produto> lerSOPSemParenteses(const string& entrada) {
     string s;
 
     for (unsigned char c : entrada) {
@@ -88,6 +95,66 @@ vector<Produto> lerSOP(const string& entrada) {
     return produtos;
 }
 
+vector<Produto> lerSOP(const string& entrada) {
+    string compacta;
+
+    for (unsigned char c : entrada) {
+        if (!isspace(c)) {
+            compacta += static_cast<char>(toupper(c));
+        }
+    }
+
+    if (compacta.empty()) {
+        throw invalid_argument("A expressao esta vazia.");
+    }
+
+    string normalizada;
+    size_t inicio = 0;
+
+    while (true) {
+        size_t fim = compacta.find('+', inicio);
+
+        string produto = compacta.substr(
+            inicio,
+            fim == string::npos ? string::npos : fim - inicio
+        );
+
+        if (produto.empty()) {
+            throw invalid_argument("Produto vazio na expressao.");
+        }
+
+        // Aceita um par de parenteses envolvendo o produto inteiro.
+        if (produto.front() == '(' && produto.back() == ')') {
+            produto = produto.substr(1, produto.size() - 2);
+        }
+
+        if (produto.empty()) {
+            throw invalid_argument("Produto vazio entre parenteses.");
+        }
+
+        // Parenteses restantes indicam formato nao suportado
+        // ou parenteses desbalanceados.
+        if (produto.find_first_of("()") != string::npos) {
+            throw invalid_argument(
+                "Use parenteses apenas ao redor de cada produto SOP."
+            );
+        }
+
+        if (!normalizada.empty()) {
+            normalizada += '+';
+        }
+
+        normalizada += produto;
+
+        if (fim == string::npos) {
+            break;
+        }
+
+        inicio = fim + 1;
+    }
+
+    return lerSOPSemParenteses(normalizada);
+}
 // Avalia a SOP nas 16 combinacoes de A, B, C e D.
 vector<Termo> listarMintermos(const vector<Produto>& produtos) {
     vector<Termo> termos;
@@ -259,41 +326,383 @@ vector<Termo> executarEtapa1(vector<Termo> atuais) {
     return primos;
 }
 
-int main() {
-    cout << "Digite a expressao SOP usando !, * e +:\n";
+struct ResultadoCobertura {
+    vector<size_t> indices;
+    int literais = 0;
+};
 
-    string entrada;
-    getline(cin, entrada);
+// Cada caractere diferente de '-' corresponde a um literal.
+int contarLiterais(const Termo& termo) {
+    int total = 0;
 
-    try {
-        vector<Produto> produtos = lerSOP(entrada);
-        vector<Termo> mintermos = listarMintermos(produtos);
+    for (char bit : termo.bits) {
+        if (bit != '-') {
+            ++total;
+        }
+    }
 
-        cout << "\nMintermos da funcao:\n";
+    return total;
+}
+
+// Converte um padrao binario em um produto SOP.
+// Exemplo: "0-01" -> "!A*!C*D".
+string termoParaSOP(const Termo& termo) {
+    const string variaveis = "ABCD";
+    string produto;
+
+    for (size_t i = 0; i < 4; ++i) {
+        if (termo.bits[i] == '-') {
+            continue;
+        }
+
+        if (!produto.empty()) {
+            produto += "*";
+        }
+
+        if (termo.bits[i] == '0') {
+            produto += "!";
+        }
+
+        produto += variaveis[i];
+    }
+
+    // "----" representa a funcao constante 1.
+    return produto.empty() ? "1" : produto;
+}
+
+void imprimirTabelaCobertura(
+    const vector<Termo>& primos,
+    const vector<Termo>& mintermos
+) {
+    cout << "\n=== Tabela de cobertura ===\n";
+
+    cout << left
+         << setw(8) << "Primo"
+         << setw(8) << "Bits";
+
+    for (const Termo& termo : mintermos) {
+        int m = *termo.mintermos.begin();
+        cout << setw(6) << ("m" + to_string(m));
+    }
+
+    cout << '\n';
+
+    for (size_t i = 0; i < primos.size(); ++i) {
+        cout << setw(8) << ("P" + to_string(i))
+             << setw(8) << primos[i].bits;
 
         for (const Termo& termo : mintermos) {
-            cout << "m" << *termo.mintermos.begin()
-                 << " = " << termo.bits << '\n';
+            int m = *termo.mintermos.begin();
+
+            bool cobre = primos[i].mintermos.count(m) != 0;
+            cout << setw(6) << (cobre ? "X" : ".");
         }
 
-        if (mintermos.empty()) {
-            cout << "A funcao e sempre 0.\n";
-            return 0;
+        cout << '\n';
+    }
+}
+
+ResultadoCobertura selecionarCoberturaMinima(
+    const vector<Termo>& primos,
+    const vector<Termo>& mintermos
+) {
+    /*
+       Uma mascara usa o bit m para indicar o mintermo m.
+
+       Exemplo:
+       cobertura de {0, 1} = bits 0 e 1 ligados.
+
+       Como existem apenas 16 mintermos, usamos
+       um unsigned int como conjunto de cobertura.
+    */
+
+    unsigned int alvo = 0u;
+
+    for (const Termo& termo : mintermos) {
+        int m = *termo.mintermos.begin();
+        alvo |= (1u << m);
+    }
+
+    vector<unsigned int> mascaras(primos.size(), 0u);
+    vector<int> custos(primos.size(), 0);
+
+    for (size_t i = 0; i < primos.size(); ++i) {
+        for (int m : primos[i].mintermos) {
+            mascaras[i] |= (1u << m);
         }
 
-        vector<Termo> primos = executarEtapa1(mintermos);
+        custos[i] = contarLiterais(primos[i]);
+    }
 
-        cout << "\nImplicantes primos:\n";
+    /*
+       restantes[i] representa tudo que pode ser coberto
+       pelos implicantes de indice i em diante.
+    */
+    vector<unsigned int> restantes(primos.size() + 1, 0u);
 
-        for (const Termo& termo : primos) {
-            cout << termo.bits << "  ";
-            imprimirMintermos(termo.mintermos);
-            cout << '\n';
+    for (size_t i = primos.size(); i > 0; --i) {
+        restantes[i - 1] = restantes[i] | mascaras[i - 1];
+    }
+
+    ResultadoCobertura melhor;
+    size_t melhorQuantidade = numeric_limits<size_t>::max();
+    int melhorLiterais = numeric_limits<int>::max();
+
+    vector<size_t> escolhidos;
+
+    function<void(size_t, unsigned int, int)> buscar;
+
+    buscar = [&](size_t indice,
+                 unsigned int cobertos,
+                 int literais) {
+
+        // Encontramos uma cobertura completa.
+        if ((cobertos & alvo) == alvo) {
+            bool menosTermos =
+                escolhidos.size() < melhorQuantidade;
+
+            bool mesmosTermosMenosLiterais =
+                escolhidos.size() == melhorQuantidade &&
+                literais < melhorLiterais;
+
+            if (menosTermos || mesmosTermosMenosLiterais) {
+                melhorQuantidade = escolhidos.size();
+                melhorLiterais = literais;
+
+                melhor.indices = escolhidos;
+                melhor.literais = literais;
+            }
+
+            return;
         }
-    } catch (const exception& erro) {
-        cerr << "Erro: " << erro.what() << '\n';
+
+        // Nao ha mais implicantes para escolher.
+        if (indice == primos.size()) {
+            return;
+        }
+
+        // Ainda falta cobertura e ja usamos tantos termos
+        // quanto a melhor solucao: continuar nao melhora.
+        if (escolhidos.size() >= melhorQuantidade) {
+            return;
+        }
+
+        // Nem usando todos os implicantes restantes
+        // seria possivel completar a cobertura.
+        if (((cobertos | restantes[indice]) & alvo) != alvo) {
+            return;
+        }
+
+        unsigned int novaCobertura =
+            cobertos | mascaras[indice];
+
+        // Opcao 1: incluir o implicante, se cobrir algo novo.
+        if (novaCobertura != cobertos) {
+            escolhidos.push_back(indice);
+
+            buscar(
+                indice + 1,
+                novaCobertura,
+                literais + custos[indice]
+            );
+
+            escolhidos.pop_back();
+        }
+
+        // Opcao 2: nao incluir o implicante.
+        buscar(indice + 1, cobertos, literais);
+    };
+
+    buscar(0, 0u, 0);
+
+    if (melhorQuantidade == numeric_limits<size_t>::max()) {
+        throw logic_error("Nao foi possivel cobrir os mintermos.");
+    }
+
+    return melhor;
+}
+
+void imprimirSolucao(
+    const vector<Termo>& primos,
+    const ResultadoCobertura& resultado
+) {
+    cout << "\nImplicantes selecionados: ";
+
+    for (size_t indice : resultado.indices) {
+        cout << "P" << indice << " ";
+    }
+
+    cout << "\nEquacao otimizada: ";
+
+    if (resultado.indices.empty()) {
+        cout << "0";
+    } else {
+        for (size_t i = 0; i < resultado.indices.size(); ++i) {
+            if (i > 0) {
+                cout << " + ";
+            }
+
+            cout << termoParaSOP(primos[resultado.indices[i]]);
+        }
+    }
+
+    cout << "\nNumero de implicantes: "
+         << resultado.indices.size();
+
+    cout << "\nNumero de literais: "
+         << resultado.literais << '\n';
+}
+
+// Reune os mintermos representados por uma lista de termos.
+set<int> reunirMintermos(const vector<Termo>& termos) {
+    set<int> resultado;
+
+    for (const Termo& termo : termos) {
+        resultado.insert(
+            termo.mintermos.begin(),
+            termo.mintermos.end()
+        );
+    }
+
+    return resultado;
+}
+
+// Obtem os mintermos cobertos pela solucao selecionada.
+set<int> coberturaDaSolucao(
+    const vector<Termo>& primos,
+    const ResultadoCobertura& resultado
+) {
+    set<int> cobertura;
+
+    for (size_t indice : resultado.indices) {
+        cobertura.insert(
+            primos[indice].mintermos.begin(),
+            primos[indice].mintermos.end()
+        );
+    }
+
+    return cobertura;
+}
+
+// Conta os literais dos produtos interpretados.
+// Adequado para as referencias fornecidas no arquivo.
+int contarLiteraisDosProdutos(const vector<Produto>& produtos) {
+    int total = 0;
+
+    for (const Produto& produto : produtos) {
+        for (int valor : produto) {
+            if (valor != -1) {
+                ++total;
+            }
+        }
+    }
+
+    return total;
+}
+
+bool linhaVazia(const string& linha) {
+    return linha.find_first_not_of(" \t\r\n") == string::npos;
+}
+
+
+int main(int argc, char* argv[]) {
+    string caminho;
+
+    if (argc >= 2) {
+        caminho = argv[1];
+    } else {
+        cout << "Caminho do arquivo de entrada: ";
+        getline(cin, caminho);
+    }
+
+    ifstream arquivo(caminho);
+
+    if (!arquivo.is_open()) {
+        cerr << "Erro: nao foi possivel abrir: "
+             << caminho << '\n';
         return 1;
     }
 
-    return 0;
+    string linha;
+    int numeroLinha = 0;
+    int total = 0;
+    int processados = 0;
+    int erros = 0;
+
+    while (getline(arquivo, linha)) {
+        ++numeroLinha;
+
+
+        // Ignora somente linhas vazias.
+        if (linha.find_first_not_of(" \t\r\n") == string::npos) {
+            continue;
+        }
+
+        ++total;
+
+        cout << "\n========================================\n";
+        cout << "CASO " << total
+             << "  linha " << numeroLinha << '\n';
+        cout << "Entrada: " << linha << '\n';
+
+        try {
+            vector<Produto> produtos = lerSOP(linha);
+            vector<Termo> mintermos = listarMintermos(produtos);
+
+            cout << "\nMintermos da funcao:\n";
+
+            for (const Termo& termo : mintermos) {
+                cout << termo.bits << " ";
+                imprimirMintermos(termo.mintermos);
+                cout << '\n';
+            }
+
+            if (mintermos.empty()) {
+                cout << "\nEquacao otimizada: 0\n";
+                cout << "Numero de implicantes: 0\n";
+                cout << "Numero de literais: 0\n";
+
+                ++processados;
+                continue;
+            }
+
+            vector<Termo> primos = executarEtapa1(mintermos);
+
+            cout << "\nImplicantes primos:\n";
+
+            for (size_t i = 0; i < primos.size(); ++i) {
+                cout << "P" << i << ": "
+                     << primos[i].bits << " ";
+
+                imprimirMintermos(primos[i].mintermos);
+                cout << '\n';
+            }
+
+            imprimirTabelaCobertura(primos, mintermos);
+
+            ResultadoCobertura resultado =
+                selecionarCoberturaMinima(primos, mintermos);
+
+            imprimirSolucao(primos, resultado);
+
+            ++processados;
+        } catch (const exception& erro) {
+            cerr << "Erro na linha " << numeroLinha
+                 << ": " << erro.what() << '\n';
+
+            ++erros;
+        }
+    }
+
+    cout << "\n============ RESUMO ============\n";
+    cout << "Expressoes encontradas: " << total << '\n';
+    cout << "Processadas: " << processados << '\n';
+    cout << "Erros: " << erros << '\n';
+
+    if (total == 0) {
+        cerr << "O arquivo nao contem expressoes.\n";
+        return 1;
+    }
+
+    return erros == 0 ? 0 : 1;
 }
