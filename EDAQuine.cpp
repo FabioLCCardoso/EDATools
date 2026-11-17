@@ -627,8 +627,6 @@ int main(int argc, char* argv[]) {
     int numeroLinha = 0;
     int total = 0;
     int processados = 0;
-    int erros = 0;
-
     while (getline(arquivo, linha)) {
         ++numeroLinha;
 
@@ -690,19 +688,16 @@ int main(int argc, char* argv[]) {
             cerr << "Erro na linha " << numeroLinha
                  << ": " << erro.what() << '\n';
 
-            ++erros;
         }
     }
 
     cout << "\n============ RESUMO ============\n";
     cout << "Expressoes encontradas: " << total << '\n';
     cout << "Processadas: " << processados << '\n';
-    cout << "Erros: " << erros << '\n';
 
     if (total == 0) {
         cerr << "O arquivo nao contem expressoes.\n";
         return 1;
     }
 
-    return erros == 0 ? 0 : 1;
 }
